@@ -7,12 +7,14 @@ import androidx.lifecycle.viewModelScope
 import com.example.ocr_finace.FinanceApplication
 import com.example.ocr_finace.data.ReceiptEntity
 import com.example.ocr_finace.data.OcrPromptType
+import com.example.ocr_finace.data.parseAddedDate
 import com.example.ocr_finace.settings.LmStudioConfig
 import com.example.ocr_finace.settings.SwipeConfig
 import com.example.ocr_finace.settings.HomeNetworkConfig
 import com.example.ocr_finace.settings.ThemeMode
 import com.example.ocr_finace.settings.ReceiptLayoutMode
 import com.example.ocr_finace.settings.CashewExportConfig
+import com.example.ocr_finace.image.CropSelection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,6 +31,8 @@ class ReceiptViewModel(application: Application) : AndroidViewModel(application)
     private val selectedId = MutableStateFlow<String?>(null)
     private val _missingSelectionId = MutableStateFlow<String?>(null)
     val missingSelectionId: StateFlow<String?> = _missingSelectionId
+    private val _pendingAdjustmentId = MutableStateFlow<String?>(null)
+    val pendingAdjustmentId: StateFlow<String?> = _pendingAdjustmentId
     private var pendingCaptureId: String? = null
 
     val receipts: StateFlow<List<ReceiptEntity>> = repository.observeAll().stateIn(
@@ -72,7 +76,7 @@ class ReceiptViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { repository.finishCapture(id) }
-                .onSuccess { ocrQueue.enqueue(it.id) }
+                .onSuccess { _pendingAdjustmentId.value = it.id }
                 .onFailure { message.value = it.message ?: "Unable to save the photo" }
         }
     }
@@ -80,7 +84,7 @@ class ReceiptViewModel(application: Application) : AndroidViewModel(application)
     fun importImage(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { repository.importImage(uri) }
-                .onSuccess { ocrQueue.enqueue(it.id) }
+                .onSuccess { _pendingAdjustmentId.value = it.id }
                 .onFailure { message.value = it.message ?: "Unable to import the image" }
         }
     }
@@ -100,11 +104,22 @@ class ReceiptViewModel(application: Application) : AndroidViewModel(application)
         total: String,
         currency: String,
         rawText: String,
+        addedDate: String,
         onSaved: () -> Unit,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                repository.updateFields(id, merchant, date, subtotal, tax, total, currency, rawText)
+                repository.updateFields(
+                    id,
+                    merchant,
+                    date,
+                    subtotal,
+                    tax,
+                    total,
+                    currency,
+                    rawText,
+                    parseAddedDate(addedDate),
+                )
             }.onSuccess {
                 message.value = "Receipt saved"
                 launch(Dispatchers.Main) { onSaved() }
@@ -153,6 +168,10 @@ class ReceiptViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun loadSettings(): LmStudioConfig = container.settings.load()
+
+    fun isLmStudioConfigured(): Boolean = container.settings.load().let { config ->
+        config.baseUrl.isNotBlank() && config.model.isNotBlank()
+    }
 
     fun saveSettings(config: LmStudioConfig) {
         container.settings.save(config)
@@ -217,6 +236,23 @@ class ReceiptViewModel(application: Application) : AndroidViewModel(application)
     fun saveCashewExportConfig(config: CashewExportConfig) {
         container.settings.saveCashewExportConfig(config)
         cashewExportConfig.value = config
+    }
+
+    fun loadCropSelection(receiptId: String): CropSelection =
+        container.settings.loadCropSelection(receiptId)
+
+    fun saveCropSelection(receiptId: String, selection: CropSelection) {
+        container.settings.saveCropSelection(receiptId, selection)
+        message.value = "Document corners saved"
+    }
+
+    fun finishAdjustment(receiptId: String, selection: CropSelection?, processAfter: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            selection?.let { container.settings.saveCropSelection(receiptId, it) }
+            if (processAfter) ocrQueue.enqueue(receiptId)
+            if (_pendingAdjustmentId.value == receiptId) _pendingAdjustmentId.value = null
+            if (selection != null) message.value = "Document corners saved"
+        }
     }
 
     fun clearMessage() {

@@ -57,17 +57,27 @@ class ReceiptListScopeTest {
     }
 
     @Test
-    fun newestAndOldestUseReversedDateOrdering() {
-        val earlier = receipt("earlier", false, date = "2025-01-01")
-        val later = receipt("later", false, date = "2026-01-01")
+    fun newestAndOldestUseAddedDateInsteadOfTransactionDate() {
+        val earlierAdded = receipt(
+            "earlier",
+            false,
+            date = "2026-01-01",
+            createdAt = 1L,
+        )
+        val laterAdded = receipt(
+            "later",
+            false,
+            date = "2025-01-01",
+            createdAt = 2L,
+        )
 
         assertEquals(
-            listOf(earlier, later),
-            options(listOf(later, earlier), sort = ReceiptSort.DATE_NEWEST),
+            listOf(laterAdded, earlierAdded),
+            options(listOf(earlierAdded, laterAdded), sort = ReceiptSort.DATE_NEWEST),
         )
         assertEquals(
-            listOf(later, earlier),
-            options(listOf(earlier, later), sort = ReceiptSort.DATE_OLDEST),
+            listOf(earlierAdded, laterAdded),
+            options(listOf(laterAdded, earlierAdded), sort = ReceiptSort.DATE_OLDEST),
         )
     }
 
@@ -126,11 +136,12 @@ class ReceiptListScopeTest {
         source: String = "IMPORT",
         currency: String = "",
         cashewExportedAt: Long? = null,
+        createdAt: Long = 1L,
     ) = ReceiptEntity(
         id = id,
         imagePath = "/tmp/$id.jpg",
         source = source,
-        createdAt = 1L,
+        createdAt = createdAt,
         updatedAt = 1L,
         merchantName = merchant,
         rawOcrText = rawText,

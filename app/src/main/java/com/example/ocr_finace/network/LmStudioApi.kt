@@ -122,9 +122,10 @@ class LmStudioApi {
               as the merchant. For example, a city such as "Hartford" is a location, not the
               merchant, when the receipt branding identifies a retailer such as "The Home Depot".
             - date: Use the transaction date printed on the receipt, not a return deadline or
-              promotional date. Preserve the printed date format.
-            - subtotal, tax, and total: Match values to their printed labels. Prefer the final
-              amount charged for total; do not use cash tendered, change, savings, or account balance.
+              promotional date. Return it as YYYY-MM-DD.
+            - subtotal, tax, and total: Match values to their printed labels. Return plain decimal
+              numbers without currency symbols or thousands separators. Prefer the final amount
+              charged for total; do not use cash tendered, change, savings, or account balance.
             - currency: Return the ISO 4217 currency code, such as USD, only when it is printed or
               clearly established by an unambiguous currency symbol and receipt context.
             - rawText: Transcribe all legible receipt text in reading order and preserve line breaks

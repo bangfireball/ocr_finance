@@ -65,14 +65,8 @@ internal fun applyReceiptListOptions(
         .toList()
 
     return when (sort) {
-        ReceiptSort.DATE_NEWEST -> filtered.sortedWith(
-            compareBy<ReceiptEntity> { it.transactionDate.ifBlank { null } }
-                .thenBy(ReceiptEntity::createdAt),
-        )
-        ReceiptSort.DATE_OLDEST -> filtered.sortedWith(
-            compareByDescending<ReceiptEntity> { it.transactionDate.ifBlank { null } }
-                .thenByDescending(ReceiptEntity::createdAt),
-        )
+        ReceiptSort.DATE_NEWEST -> filtered.sortedByDescending(ReceiptEntity::createdAt)
+        ReceiptSort.DATE_OLDEST -> filtered.sortedBy(ReceiptEntity::createdAt)
         ReceiptSort.MERCHANT_ASC -> filtered.sortedWith(
             compareBy<ReceiptEntity> { it.merchantName.lowercase(Locale.getDefault()) }
                 .thenByDescending(ReceiptEntity::createdAt),

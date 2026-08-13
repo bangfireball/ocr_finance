@@ -12,12 +12,14 @@ The project is a working early MVP built with Kotlin and Jetpack Compose.
 - Optional home-Wi-Fi-only processing with automatic background resumption
 - OpenAI-compatible LM Studio integration and connection testing
 - Vision-model selection and improved receipt-specific OCR prompting
+- First-use setup guidance before capture or import
+- Resilient structured-response parsing with normalized dates, amounts, and ISO currencies
 - Merchant, date, subtotal, tax, total, currency, and raw-text extraction
 - Manual review, editing, retry, archive, restore, and deletion
 - Active, Archived, and All receipt scopes
-- Thumbnail and compact list layouts
+- Two-column Thumbnail, image-and-details Mixed, and compact List layouts
 - Search, sorting, and advanced receipt filters
-- Configurable swipe actions with confirmation and five-second Undo
+- Configurable archive/restore, delete, and Cashew swipe actions with optional confirmation and five-second Undo for local changes
 - Shared long-press and three-dot receipt action menu
 - Configurable Cashew export fields
 - Light, dark, and follow-device themes
@@ -94,7 +96,9 @@ Store image and local record
        ↓
 Wait for queue slot and optional home network
        ↓
-Prepare image and send it to LM Studio
+Orient, perspective-correct, and preserve fine image detail
+       ↓
+Send the prepared image to LM Studio
        ↓
 Review and edit extracted fields
        ↓

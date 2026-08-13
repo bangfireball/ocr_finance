@@ -87,6 +87,7 @@ class ReceiptRepository(
         total: String,
         currency: String,
         rawText: String,
+        createdAt: Long,
     ) {
         val receipt = dao.get(id) ?: return
         dao.update(
@@ -98,6 +99,7 @@ class ReceiptRepository(
                 total = total,
                 currency = currency,
                 rawOcrText = rawText,
+                createdAt = createdAt,
                 updatedAt = System.currentTimeMillis(),
             ),
         )

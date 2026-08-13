@@ -24,6 +24,8 @@ The application currently supports:
 - Storing receipt images in private application storage.
 - Maintaining local receipt records in a Room database.
 - Resizing, rotating, and compressing images before processing.
+- Preserving and displaying the exact prepared JPEG sent to LM Studio alongside the original receipt.
+- Opening either the original or sent-to-LM receipt image in a full-screen viewer from the edit screen.
 - Sending an image to an OpenAI-compatible LM Studio chat-completions endpoint.
 - Extracting:
   - Merchant name
@@ -37,7 +39,7 @@ The application currently supports:
 - Retrying failed processing.
 - Manually editing and saving extracted fields.
 - Listing previously stored receipts.
-- Archiving or deleting receipts with configurable left and right swipe actions.
+- Archiving/restoring, deleting, or opening receipts in Cashew with configurable left and right swipe actions and optional confirmation.
 - Deleting a receipt and its stored image.
 - Opening a prefilled transaction URL in Cashew.
 - Configuring whether merchant/title, transaction date, receipt reference, and raw OCR text are forwarded to Cashew; amount remains required.
@@ -73,11 +75,12 @@ The following additions were accepted after Phase 1 device testing:
 - Active and archived receipt views.
 - Five-second undo for confirmed archive and delete swipe actions.
 - A receipt kebab menu sharing the same actions as long-press.
-- Thumbnail and compact list layouts.
+- Two-column Thumbnail, image-and-details Mixed, and compact List layouts.
 - Receipt search, sorting, and filtering.
 - Configurable Cashew export fields in a dedicated settings section.
 - Interactive four-corner document adjustment and perspective correction before OCR.
 - Vision-capability filtering for the LM Studio model selector.
+- Configurable OCR image enhancement modes, with the current natural-color preparation remaining the default.
 
 ## User Workflow
 
@@ -136,7 +139,7 @@ Each record contains the image path, source, timestamps, extracted fields, proce
 
 ### Processing
 
-`ReceiptRepository` currently coordinates record creation and processing-state transitions. `ImagePreprocessor` applies EXIF rotation, resizing, JPEG compression, and Base64 encoding. `LmStudioReceiptProcessor` sends the prepared image through `LmStudioApi` and maps the returned JSON into a `ProcessedReceipt`.
+`ReceiptRepository` currently coordinates record creation and processing-state transitions. `ImagePreprocessor` applies EXIF rotation, optional four-point perspective correction, resizing to a maximum 2200-pixel dimension, JPEG quality 93 compression, and Base64 encoding. `LmStudioReceiptProcessor` sends the prepared image through `LmStudioApi` and maps the returned JSON into a `ProcessedReceipt`.
 
 OCR execution uses a durable WorkManager-backed queue. It preserves queued work across process death and defaults to one serial OCR lane. Settings can distribute newly queued work across 1–4 serial lanes. Home-network restrictions and protection against late results overwriting newer manual edits remain planned.
 
@@ -182,7 +185,7 @@ The checkout does not contain Git history. This timeline is reconstructed from t
 | Automated verification | Not started | Existing tests are Android template placeholders. |
 | Reliability and queue hardening | In progress | Durable queuing, configurable concurrency, tracked retries, home-network gating, edit-revision protection, and interrupted-state recovery are implemented. Setup guidance, navigation restoration, parsing, and field normalization remain. |
 | Receipt organization | In progress | Active/Archived/All scopes, archive restore, confirmation, and latest-action Undo are implemented; list modes, search, sort, and advanced filters remain. |
-| Image correction | Planned | Four-point crop editing and perspective correction are specified. |
+| Image correction | In progress | Manual four-point adjustment, perspective correction, and sent-image preview are implemented; automatic edge detection remains. |
 | Release readiness | Not started | Device QA, accessibility, security review, and release configuration remain. |
 
 ### Current milestone
@@ -211,7 +214,7 @@ Phase 1 manual validation is complete. The application is a working early MVP wh
 - Extracted dates, currencies, and monetary values are stored as unvalidated strings.
 - There is no duplicate receipt detection.
 - Retrying a completed but weak result with a deliberate second-attempt prompt is not supported.
-- Image quality is a major determinant of model accuracy, and there is no document crop or perspective-correction editor.
+- Image quality remains a major determinant of model accuracy; manual perspective correction is available, while automatic edge detection and optional enhancement modes remain planned.
 
 ### Configuration and connectivity
 
@@ -375,7 +378,7 @@ Phase 1 manual validation is complete. The application is a working early MVP wh
 
 #### Receipt layouts, search, and ordering — 2026-08-12
 
-- The receipt list supports persisted Thumbnail and compact List layouts; List removes the image and condenses date and status into one line.
+- The receipt list supports three persisted layouts: a two-column Thumbnail grid showing only receipt images and merchant titles, a Mixed layout retaining the original image-and-details cards, and a compact text-first List layout.
 - Both layouts retain swipe, long-press, three-dot actions, scopes, confirmation, and Undo behavior.
 - Search matches merchant, raw OCR text, transaction date, total, and currency without case sensitivity.
 - Sorting supports newest date, oldest date, merchant name, total high-to-low, and total low-to-high.
@@ -402,12 +405,20 @@ Phase 1 manual validation is complete. The application is a working early MVP wh
 - [x] Add an optional home-network-only OCR setting.
 - [x] Allow the current Wi-Fi network to be designated or forgotten as home.
 - [x] Keep jobs queued off the home network and explain the waiting state.
-- [ ] Guide users through LM Studio setup before the first processing attempt.
+- [x] Guide users through LM Studio setup before the first processing attempt.
 - [x] Restore the selected receipt and screen consistently after process recreation.
 - [x] Prevent late processing results from overwriting newer manual edits.
 - [x] Recover or retry receipts left in `PROCESSING`.
-- [ ] Improve structured-response parsing and error reporting.
-- [ ] Validate and normalize dates, totals, taxes, and currency values.
+- [x] Improve structured-response parsing and error reporting.
+- [x] Validate and normalize dates, totals, taxes, and currency values.
+
+#### Phase 2A completion — 2026-08-12
+
+- Capture and import now require a configured LM Studio server URL and selected model; incomplete setup opens a clear explanation with a direct Settings action before any receipt record or OCR job is created.
+- Receipt response parsing locates a recognizable JSON object inside Markdown fences or surrounding model commentary and reports missing structure or specifically invalid fields with actionable retry/edit guidance.
+- OCR dates normalize to `YYYY-MM-DD`, monetary fields normalize to plain decimal strings, and currencies normalize to validated ISO 4217 codes before model results can replace stored fields.
+- Invalid structured values fail the OCR attempt without overwriting existing manual or extracted values.
+- Focused JVM tests cover fenced and wrapped JSON, escaped raw text, null fields, malformed responses, invalid-field reporting, common date formats, international amount separators, negative amounts, and currency aliases.
 
 ### Phase 2B: Receipt list and reversible actions
 
@@ -418,10 +429,12 @@ Phase 1 manual validation is complete. The application is a working early MVP wh
 - [x] Implement delayed deletion so Undo leaves the record and image intact.
 - [x] Add a kebab menu to every receipt.
 - [x] Use one shared action sheet for kebab and long-press actions.
-- [x] Support persisted Thumbnail and compact List layouts.
+- [x] Support persisted two-column Thumbnail, Mixed, and compact List layouts.
 - [x] Add search across merchant, OCR text, date, total, and currency.
 - [x] Add date, merchant, and normalized-total sorting.
+- [x] Sort date ordering by the user-editable date the receipt was added, independent of transaction date.
 - [x] Add filters for scope, processing status, source, Cashew status, date, and currency.
+- [x] Add Open in Cashew as a swipe action and allow swipe confirmation to be disabled while retaining Undo for archive and delete.
 
 ### Phase 2C: Cashew Export settings
 
@@ -436,15 +449,15 @@ Phase 1 manual validation is complete. The application is a working early MVP wh
 
 ### Phase 2D: Four-point document correction
 
-- [ ] Add an image-adjustment screen before OCR with a later reopen option.
-- [ ] Add four independently draggable corner handles with at least 48 dp touch targets.
-- [ ] Connect the handles with a high-contrast quadrilateral outline and shade the exterior.
-- [ ] Constrain points to image bounds and reject self-intersecting/invalid shapes.
-- [ ] Persist normalized corner coordinates.
-- [ ] Map preview points back to original-image coordinates.
-- [ ] Apply perspective correction and generate a corrected rectangular image.
-- [ ] Preserve the original image and use the corrected image as the OCR input.
-- [ ] Add Reset, Rotate, Cancel, and Apply controls.
+- [x] Add an image-adjustment screen before OCR with a later reopen option.
+- [x] Add four independently draggable corner handles with at least 48 dp touch targets.
+- [x] Connect the handles with a high-contrast quadrilateral outline and shade the exterior.
+- [x] Constrain points to image bounds and reject self-intersecting/invalid shapes.
+- [x] Persist normalized corner coordinates.
+- [x] Map preview points back to original-image coordinates.
+- [x] Apply perspective correction and generate a corrected rectangular image.
+- [x] Preserve the original image and use the corrected image as the OCR input.
+- [x] Add Reset, Rotate, Cancel, and Apply controls.
 - [ ] Add optional automatic document-edge detection to initialize the handles.
 
 PDF generation is not currently part of OCR Finance. Perspective correction targets the OCR input image. PDF output should be planned separately if required.
@@ -457,6 +470,70 @@ PDF generation is not currently part of OCR Finance. Perspective correction targ
 - [ ] Optionally probe and cache model image-input capability.
 - [ ] Show confirmed, likely, and untested capability states.
 - [ ] Provide a `Show all models` fallback for unknown model families.
+- [ ] Persist the exact model identifier and relevant processing configuration with every OCR attempt so historical results remain attributable after settings change.
+- [ ] Track end-to-end processing duration and, when available, separate queue wait, image preparation, network/request, and model-generation durations.
+- [ ] Capture LM Studio usage metadata when returned, including prompt tokens, completion tokens, total tokens, tokens per second, and time to first token when supported.
+- [ ] Track success, timeout, connection failure, model/API failure, malformed response, and field-validation failure counts per model.
+- [ ] Track structured-result completeness per attempt, including how many expected fields were populated and whether date, amount, and currency normalization succeeded.
+- [ ] Track second-attempt frequency and whether a retry produced a valid replacement result.
+- [ ] Measure user correction burden without retaining duplicate sensitive content: record which extracted fields changed, how many fields changed, and whether the raw OCR text was replaced after processing.
+- [ ] Add an optional user rating for an OCR attempt, such as Good, Needs correction, or Unusable, because extracted values alone cannot establish ground-truth accuracy.
+- [ ] Record comparison context that can affect performance, including image dimensions/encoded size, Natural or Enhanced mode, prompt type, device/network timeout, and concurrent OCR setting.
+- [ ] Aggregate per-model metrics using sample count, median, p90, and recent-window values so outliers and model warm-up do not distort comparisons.
+- [ ] Add a `Model performance` link in LM Studio Settings that opens a metrics screen with per-model speed, reliability, completeness, correction burden, and user-rating summaries.
+- [ ] Allow model metrics to be filtered by date range, prompt type, image mode, and first versus second attempt.
+- [ ] Show a clear insufficient-data state and avoid declaring a model “best” until it has a meaningful sample size across comparable receipts.
+- [ ] Allow users to clear or export local model-performance history independently from receipt records.
+- [ ] Keep performance history local by default and document exactly which receipt-derived metadata is retained.
+
+### Phase 2F: Configurable image enhancement
+
+- [ ] Add an OCR image mode setting with Natural, Enhanced, and Natural + Enhanced options.
+- [ ] Keep Natural as the default and preserve the original receipt image in every mode.
+- [ ] Implement conservative illumination/shadow correction, local contrast enhancement, gentle noise reduction, and mild sharpening.
+- [ ] Avoid destructive thresholding that can erase decimal points, punctuation, or faint thermal-print characters.
+- [ ] Allow Natural + Enhanced to send both image variants when supported by the selected vision model.
+- [ ] Explain the request-size and model-memory tradeoff of sending two images.
+- [ ] Add representative faint, shadowed, low-resolution, and already-clean receipt fixtures for comparison testing.
+- [ ] Measure extraction accuracy before making any enhanced mode the default.
+
+### Phase 2G: Queue visibility and processing notifications
+
+#### Queue position
+
+- [ ] Persist a queue-entry timestamp or monotonic sequence for every newly queued and retried OCR attempt so ordering does not depend on the editable receipt-added date.
+- [ ] Derive a live global queue position from unfinished OCR attempts, displaying `Queue #N` on each `QUEUED` receipt in Mixed and List layouts and a compact numbered badge in Thumbnail layout.
+- [ ] Define position `#1` as the next waiting receipt across all configured WorkManager lanes; show currently executing receipts as `Processing` rather than assigning them a waiting position.
+- [ ] Recalculate visible positions when work starts, completes, retries, is cancelled, or concurrency changes, without rewriting every receipt record solely to update its displayed number.
+- [ ] Explain that concurrency can cause more than one receipt to process at once and that displayed positions describe waiting order, not a guaranteed completion order.
+- [ ] Reconcile queue positions against WorkManager during startup recovery so stale database state does not produce duplicate or missing positions.
+
+#### Processing notifications
+
+- [ ] Create a low-noise `Receipt processing` Android notification channel.
+- [ ] Request Android 13+ notification permission contextually when the user enables processing notifications or first queues background OCR; continue processing normally if permission is denied.
+- [ ] Add a persisted Settings toggle for processing notifications, enabled by default where permission is available.
+- [ ] Post a completion notification after a receipt transitions successfully to `COMPLETE`, including the merchant or receipt fallback title and a concise success message without exposing totals or raw OCR text on the lock screen.
+- [ ] Post a failure notification after a terminal OCR failure with a safe error summary and a retry-oriented message.
+- [ ] Make each notification open the corresponding receipt detail screen and restore that destination correctly after process death.
+- [ ] Suppress or quietly update notifications when OCR finishes while the matching receipt is already visible in the foreground, avoiding redundant alerts.
+- [ ] Use stable per-receipt notification IDs so retries update an existing notification instead of creating duplicates; group multiple completed receipts into a summary when appropriate.
+- [ ] Ensure worker cancellation or receipt deletion removes any related active notification.
+
+#### Unprocessed visual treatment
+
+- [ ] Give `PENDING` and `QUEUED` receipts a distinct theme-aware container or border treatment in Thumbnail, Mixed, and List layouts.
+- [ ] Give `PROCESSING` and `FAILED` their own related but distinguishable treatments so waiting, active work, and errors cannot be confused.
+- [ ] Keep `COMPLETE` receipts on the normal surface treatment and preserve readable contrast in light, dark, and Follow device themes.
+- [ ] Pair every color treatment with text, iconography, or semantics; color alone must never communicate processing state.
+- [ ] Add accessibility descriptions announcing the receipt title, processing state, and queue position where applicable.
+
+#### Verification
+
+- [ ] Add JVM tests for stable queue ordering, retries receiving a new queue position, cancellation, concurrent lanes, and startup reconciliation.
+- [ ] Add worker/notification tests for completion, failure, permission denial, duplicate suppression, deep-link destinations, and deletion cleanup.
+- [ ] Add Compose tests for queue badges and state treatments across Thumbnail, Mixed, and List layouts, including light/dark contrast and accessibility semantics.
+- [ ] Validate notification delivery and deep links on the target Samsung device with the app foregrounded, backgrounded, and process-stopped.
 
 ### Phase 3: Add automated coverage
 
@@ -488,7 +565,7 @@ PDF generation is not currently part of OCR Finance. Perspective correction targ
 - [ ] Improve loading, empty, setup, and error states.
 - [ ] Add accessibility descriptions and semantics.
 - [ ] Review secure token storage and local-network security behavior.
-- [ ] Decide whether offline OCR, line items, categories, PDF output, and data export belong in a later release.
+- [x] Move offline OCR, line items, categories, PDF output, and portable export into an explicit post-MVP stretch-goals backlog.
 
 ### Phase 5: Prepare a releasable MVP
 
@@ -498,6 +575,22 @@ PDF generation is not currently part of OCR Finance. Perspective correction targ
 - [ ] Finalize branding and launcher assets.
 - [ ] Configure release signing, optimization, versioning, and release notes.
 - [ ] Capture screenshots or recordings for release review.
+
+## Stretch Goals and Longshot Features
+
+These ideas are intentionally outside the releasable MVP. They require separate product, privacy, storage-format, and maintenance decisions before implementation.
+
+- [ ] Add portable local export and restore containing receipt records, original images, optional prepared OCR images, settings, and a versioned manifest in formats such as JSON and CSV.
+- [ ] Support provider-neutral cloud backup and restore through Android's Storage Access Framework, allowing users to choose Google Drive, OneDrive, another document provider, or a local folder without giving OCR Finance direct cloud-account credentials.
+- [ ] Evaluate optional direct Google Drive and Microsoft OneDrive synchronization only if scheduled background sync, conflict resolution, multi-device restore, and backup-status reporting justify provider-specific OAuth and API maintenance.
+- [ ] Define encryption, retention, duplicate handling, partial-failure recovery, schema migration, and user-visible verification for all backup and restore workflows.
+- [ ] Add shareable per-receipt export packages for sending an image and reviewed structured data through Android's share sheet.
+- [ ] Evaluate offline or on-device OCR as a fallback when LM Studio is unavailable.
+- [ ] Evaluate receipt line-item extraction, editing, categories, and category suggestions.
+- [ ] Evaluate duplicate-receipt detection using image and extracted-field similarity.
+- [ ] Evaluate PDF receipt import and optional corrected-PDF generation.
+- [ ] Evaluate aggregate spending summaries, charts, and reports after category and normalization quality is sufficient.
+- [ ] Evaluate direct financial-app synchronization beyond URL handoff only where stable, supported APIs exist.
 
 ## Definition of MVP Completion
 
@@ -523,6 +616,8 @@ Record meaningful product and architecture decisions here so future work does no
 | 2026-08-12 | Name forwarding preferences `Cashew Export`. | The destination-specific name is clearer than the proposed `Data Forward` label. |
 | 2026-08-12 | Apply four-point perspective correction to the OCR input image. | OCR Finance does not currently generate PDFs; PDF output remains a separate product decision. |
 | 2026-08-12 | Filter model discovery by vision capability with a show-all fallback. | `/v1/models` may not expose complete capability metadata, so unknown but compatible models must remain discoverable. |
+| 2026-08-12 | Track local per-model OCR performance and expose it from LM Studio Settings. | Duration alone favors fast models even when results are incomplete; reliability, structured completeness, retry frequency, correction burden, user ratings, and comparable processing context provide a more useful model comparison without pretending unverified OCR output is ground truth. |
+| 2026-08-12 | Add explicit OCR queue positions, state-aware receipt styling, and optional completion/failure notifications. | Durable background processing should remain understandable when several receipts are waiting, while notification content must be useful without exposing sensitive financial details on the lock screen. |
 | 2026-08-12 | Navigate back to the list only after a receipt save succeeds. | Waiting for the Room write removes the stale-list race; state-aware fallback titles avoid labeling completed or failed receipts as unprocessed. |
 | 2026-08-12 | Implement OCR concurrency as durable serial WorkManager lanes. | One lane guarantees the default single-job behavior; 2–4 lanes allow bounded parallel requests while preserving ordering within each lane. |
 | 2026-08-12 | Treat retry as a tracked second attempt and reject malformed structured output. | A weak OCR result needs a genuinely fresh reading, while invalid responses must not erase the user's current fields. |
@@ -535,7 +630,9 @@ Record meaningful product and architecture decisions here so future work does no
 | 2026-08-12 | Use one context-aware receipt action dialog for both the kebab button and long press. | Both entry points should expose the same behavior and reuse existing confirmation and Undo safety. |
 | 2026-08-12 | Persist only the chosen receipt layout while keeping search, sort, status, and scope as saveable screen state. | Layout is a durable user preference; transient list exploration should survive recreation without permanently changing future sessions. |
 | 2026-08-12 | Search and sort the observed local receipt collection in the UI layer for the MVP. | The list already observes all local records for Active/Archived/All scopes, so this avoids schema changes while remaining responsive for the expected on-device dataset. |
+| 2026-08-12 | Use the editable receipt-added date for Newest and Oldest sorting. | Import chronology is distinct from the transaction date extracted from the receipt, and users may need to correct the date assigned on import. |
 | 2026-08-12 | Make Cashew amount required and all other forwarded fields independently optional. | This preserves a valid transaction while giving users control over title, date, generated reference notes, and potentially sensitive raw OCR text. |
+| 2026-08-12 | Defer configurable image enhancement and keep high-quality natural color as the default. | Conservative enhancement may improve faint receipts, but it requires accuracy comparisons to ensure it does not erase or alter important characters. |
 | 2026-08-12 | Apply OCR results only when the receipt revision is unchanged. | A model response arriving after a manual save must finalize processing without overwriting the user's newer values. |
 | 2026-08-12 | Reconcile `PROCESSING` receipts with WorkManager at startup. | Durable work should remain authoritative when active, while orphaned database state must be safely returned to the queue without duplicate OCR requests. |
 | 2026-08-12 | Save navigation as a destination containing its required receipt ID. | Detail state and selection must restore atomically; a detail screen without a valid receipt must safely return to the list. |

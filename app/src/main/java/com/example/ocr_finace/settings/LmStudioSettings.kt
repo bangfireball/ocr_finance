@@ -1,6 +1,9 @@
 package com.example.ocr_finace.settings
 
 import android.content.Context
+import com.example.ocr_finace.image.CropSelection
+import com.example.ocr_finace.image.decodeCropSelection
+import com.example.ocr_finace.image.encodeCropSelection
 
 data class LmStudioConfig(
     val baseUrl: String,
@@ -8,11 +11,12 @@ data class LmStudioConfig(
     val apiToken: String,
 )
 
-enum class SwipeAction { ARCHIVE, DELETE }
+enum class SwipeAction { ARCHIVE, DELETE, CASHEW }
 
 data class SwipeConfig(
     val right: SwipeAction,
     val left: SwipeAction,
+    val confirmActions: Boolean = true,
 )
 
 data class HomeNetworkConfig(
@@ -22,7 +26,7 @@ data class HomeNetworkConfig(
 
 enum class ThemeMode { FOLLOW_DEVICE, LIGHT, DARK }
 
-enum class ReceiptLayoutMode { THUMBNAIL, LIST }
+enum class ReceiptLayoutMode { THUMBNAIL, MIXED, LIST }
 
 data class CashewExportConfig(
     val includeTitle: Boolean = true,
@@ -51,12 +55,14 @@ class LmStudioSettings(context: Context) {
     fun loadSwipeConfig(): SwipeConfig = SwipeConfig(
         right = loadSwipeAction("swipe_right", SwipeAction.ARCHIVE),
         left = loadSwipeAction("swipe_left", SwipeAction.DELETE),
+        confirmActions = preferences.getBoolean("confirm_swipe_actions", true),
     )
 
     fun saveSwipeConfig(config: SwipeConfig) {
         preferences.edit()
             .putString("swipe_right", config.right.name)
             .putString("swipe_left", config.left.name)
+            .putBoolean("confirm_swipe_actions", config.confirmActions)
             .apply()
     }
 
@@ -124,6 +130,16 @@ class LmStudioSettings(context: Context) {
             .putBoolean("cashew_reference", config.includeReceiptReference)
             .putBoolean("cashew_ocr_text", config.includeOcrText)
             .apply()
+    }
+
+    fun loadCropSelection(receiptId: String): CropSelection =
+        decodeCropSelection(preferences.getString("crop_$receiptId", null))
+
+    fun loadSavedCropSelection(receiptId: String): CropSelection? =
+        preferences.getString("crop_$receiptId", null)?.let(::decodeCropSelection)
+
+    fun saveCropSelection(receiptId: String, selection: CropSelection) {
+        preferences.edit().putString("crop_$receiptId", encodeCropSelection(selection)).apply()
     }
 
     @Synchronized

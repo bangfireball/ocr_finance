@@ -13,20 +13,29 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,16 +71,29 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -79,6 +101,7 @@ import coil3.compose.AsyncImage
 import com.example.ocr_finace.data.ProcessingStatus
 import com.example.ocr_finace.data.OcrPromptType
 import com.example.ocr_finace.data.ReceiptEntity
+import com.example.ocr_finace.data.formatAddedDate
 import com.example.ocr_finace.integration.cashew.CashewLinkBuilder
 import com.example.ocr_finace.settings.LmStudioConfig
 import com.example.ocr_finace.settings.SwipeAction
@@ -87,13 +110,17 @@ import com.example.ocr_finace.settings.HomeNetworkConfig
 import com.example.ocr_finace.settings.ThemeMode
 import com.example.ocr_finace.settings.ReceiptLayoutMode
 import com.example.ocr_finace.settings.CashewExportConfig
+import com.example.ocr_finace.image.CropSelection
+import com.example.ocr_finace.image.NormalizedPoint
+import com.example.ocr_finace.image.defaultCropCorners
+import com.example.ocr_finace.image.rotateCropClockwise
+import com.example.ocr_finace.image.isValidCrop
+import com.example.ocr_finace.image.orientedImageDimensions
 import com.example.ocr_finace.ui.receipt.ReceiptViewModel
 import com.example.ocr_finace.ui.receipt.receiptDisplayTitle
 import com.example.ocr_finace.ui.receipt.ReceiptDestination
 import com.example.ocr_finace.ui.theme.OCR_FinaceTheme
 import java.io.File
-import java.text.DateFormat
-import java.util.Date
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -142,7 +169,9 @@ private fun ReceiptApp(
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val receiptLayoutMode by viewModel.receiptLayoutMode.collectAsStateWithLifecycle()
     val cashewExportConfig by viewModel.cashewExportConfig.collectAsStateWithLifecycle()
+    val pendingAdjustmentId by viewModel.pendingAdjustmentId.collectAsStateWithLifecycle()
     val snackbarHost = remember { SnackbarHostState() }
+    var showSetupRequired by rememberSaveable { mutableStateOf(false) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) {
         viewModel.onCaptureResult(it)
     }
@@ -157,13 +186,30 @@ private fun ReceiptApp(
         }
     }
 
+    LaunchedEffect(pendingAdjustmentId) {
+        pendingAdjustmentId?.let { receiptId ->
+            viewModel.select(receiptId)
+            destinationValue = ReceiptDestination.Adjust(receiptId).encode()
+        }
+    }
+
     LaunchedEffect(destination) {
-        viewModel.select((destination as? ReceiptDestination.Detail)?.receiptId)
+        viewModel.select(
+            when (destination) {
+                is ReceiptDestination.Detail -> destination.receiptId
+                is ReceiptDestination.Adjust -> destination.receiptId
+                else -> null
+            },
+        )
     }
 
     LaunchedEffect(destination, missingSelectionId) {
-        if (destination is ReceiptDestination.Detail &&
-            missingSelectionId == destination.receiptId
+        val selectedDestinationId = when (destination) {
+            is ReceiptDestination.Detail -> destination.receiptId
+            is ReceiptDestination.Adjust -> destination.receiptId
+            else -> null
+        }
+        if (selectedDestinationId != null && missingSelectionId == selectedDestinationId
         ) {
             destinationValue = ReceiptDestination.List.encode()
             viewModel.select(null)
@@ -173,6 +219,11 @@ private fun ReceiptApp(
     BackHandler(enabled = destination !is ReceiptDestination.List) {
         destinationValue = if (destination is ReceiptDestination.CashewSettings) {
             ReceiptDestination.Settings.encode()
+        } else if (destination is ReceiptDestination.Adjust) {
+            val processAfter = selected?.processingStatus == ProcessingStatus.PENDING.name
+            viewModel.finishAdjustment(destination.receiptId, null, processAfter)
+            if (processAfter) ReceiptDestination.List.encode()
+            else ReceiptDestination.Detail(destination.receiptId).encode()
         } else {
             ReceiptDestination.List.encode()
         }
@@ -189,6 +240,7 @@ private fun ReceiptApp(
                             is ReceiptDestination.Detail -> "Receipt"
                             ReceiptDestination.Settings -> "LM Studio"
                             ReceiptDestination.CashewSettings -> "Cashew Export"
+                            is ReceiptDestination.Adjust -> "Adjust document"
                         },
                     )
                 },
@@ -197,6 +249,11 @@ private fun ReceiptApp(
                         TextButton(onClick = {
                             destinationValue = if (destination is ReceiptDestination.CashewSettings) {
                                 ReceiptDestination.Settings.encode()
+                            } else if (destination is ReceiptDestination.Adjust) {
+                                val processAfter = selected?.processingStatus == ProcessingStatus.PENDING.name
+                                viewModel.finishAdjustment(destination.receiptId, null, processAfter)
+                                if (processAfter) ReceiptDestination.List.encode()
+                                else ReceiptDestination.Detail(destination.receiptId).encode()
                             } else {
                                 ReceiptDestination.List.encode()
                             }
@@ -220,10 +277,18 @@ private fun ReceiptApp(
                 receipts = receipts,
                 modifier = Modifier.padding(padding),
                 onTakePhoto = {
-                    viewModel.prepareCapture()?.let(camera::launch)
+                    if (viewModel.isLmStudioConfigured()) {
+                        viewModel.prepareCapture()?.let(camera::launch)
+                    } else {
+                        showSetupRequired = true
+                    }
                 },
                 onImport = {
-                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    if (viewModel.isLmStudioConfigured()) {
+                        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    } else {
+                        showSetupRequired = true
+                    }
                 },
                 onOpen = {
                     viewModel.select(it)
@@ -240,12 +305,15 @@ private fun ReceiptApp(
                     runCatching { openUri(CashewLinkBuilder.build(receipt, cashewExportConfig)) }
                         .onSuccess { viewModel.markCashewOpened(receipt.id) }
                 },
+                onAdjust = { receiptId ->
+                    destinationValue = ReceiptDestination.Adjust(receiptId).encode()
+                },
             )
             is ReceiptDestination.Detail -> ReceiptDetail(
                 receipt = selected,
                 modifier = Modifier.padding(padding),
-                onSave = { id, merchant, date, subtotal, tax, total, currency, rawText ->
-                    viewModel.save(id, merchant, date, subtotal, tax, total, currency, rawText) {
+                onSave = { id, merchant, date, subtotal, tax, total, currency, rawText, addedDate ->
+                    viewModel.save(id, merchant, date, subtotal, tax, total, currency, rawText, addedDate) {
                         viewModel.select(null)
                         destinationValue = ReceiptDestination.List.encode()
                     }
@@ -257,6 +325,9 @@ private fun ReceiptApp(
                 onCashew = { receipt ->
                     runCatching { openUri(CashewLinkBuilder.build(receipt, cashewExportConfig)) }
                         .onSuccess { viewModel.markCashewOpened(receipt.id) }
+                },
+                onAdjust = { receiptId ->
+                    destinationValue = ReceiptDestination.Adjust(receiptId).encode()
                 },
             )
             ReceiptDestination.Settings -> SettingsScreen(
@@ -289,7 +360,45 @@ private fun ReceiptApp(
                 modifier = Modifier.padding(padding),
                 onConfigChanged = viewModel::saveCashewExportConfig,
             )
+            is ReceiptDestination.Adjust -> DocumentAdjustmentScreen(
+                receipt = selected,
+                initial = viewModel.loadCropSelection(destination.receiptId),
+                modifier = Modifier.padding(padding),
+                onCancel = {
+                    val processAfter = selected?.processingStatus == ProcessingStatus.PENDING.name
+                    viewModel.finishAdjustment(destination.receiptId, null, processAfter)
+                    destinationValue = if (processAfter) ReceiptDestination.List.encode()
+                    else ReceiptDestination.Detail(destination.receiptId).encode()
+                },
+                onApply = { selection ->
+                    val processAfter = selected?.processingStatus == ProcessingStatus.PENDING.name
+                    viewModel.finishAdjustment(destination.receiptId, selection, processAfter)
+                    destinationValue = if (processAfter) ReceiptDestination.List.encode()
+                    else ReceiptDestination.Detail(destination.receiptId).encode()
+                },
+            )
         }
+    }
+    if (showSetupRequired) {
+        AlertDialog(
+            onDismissRequest = { showSetupRequired = false },
+            title = { Text("Set up LM Studio first") },
+            text = {
+                Text(
+                    "Choose a reachable LM Studio server and vision-capable model before adding a receipt. " +
+                        "This prevents the first OCR attempt from being queued with incomplete settings.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSetupRequired = false
+                    destinationValue = ReceiptDestination.Settings.encode()
+                }) { Text("Open settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSetupRequired = false }) { Text("Not now") }
+            },
+        )
     }
 }
 
@@ -308,6 +417,7 @@ private fun ReceiptList(
     onRestore: (String, () -> Unit) -> Unit,
     onDelete: (String, () -> Unit) -> Unit,
     onCashew: (ReceiptEntity) -> Unit,
+    onAdjust: (String) -> Unit,
 ) {
     var actionReceipt by remember { mutableStateOf<ReceiptEntity?>(null) }
     var listScope by rememberSaveable { mutableStateOf(ReceiptListScope.ACTIVE) }
@@ -336,7 +446,45 @@ private fun ReceiptList(
             ReceiptListAction.ARCHIVE -> onArchive(requested.receipt.id, onComplete)
             ReceiptListAction.RESTORE -> onRestore(requested.receipt.id, onComplete)
             ReceiptListAction.DELETE -> onDelete(requested.receipt.id, onComplete)
+            ReceiptListAction.CASHEW -> {
+                onCashew(requested.receipt)
+                onComplete()
+            }
         }
+    }
+    fun performSwipe(requested: PendingSwipeAction) {
+        activeUndo?.let { previous ->
+            undoJob?.cancel()
+            commitSwipe(previous)
+        }
+        if (requested.action == ReceiptListAction.CASHEW) {
+            commitSwipe(requested)
+            return
+        }
+        val verb = swipeActionVerb(requested.action)
+        hiddenReceiptIds = hiddenReceiptIds + requested.receipt.id
+        activeUndo = requested
+        undoJob = coroutineScope.launch {
+            snackbarHost.currentSnackbarData?.dismiss()
+            val result = withTimeoutOrNull(SWIPE_UNDO_WINDOW_MILLIS) {
+                snackbarHost.showSnackbar(
+                    message = "Receipt ${verb.lowercase()}d",
+                    actionLabel = "Undo",
+                    duration = SnackbarDuration.Indefinite,
+                )
+            }
+            if (result == SnackbarResult.ActionPerformed) {
+                hiddenReceiptIds = hiddenReceiptIds - requested.receipt.id
+            } else {
+                commitSwipe(requested)
+            }
+            activeUndo = null
+            undoJob = null
+        }
+    }
+    fun requestSwipe(receipt: ReceiptEntity, action: SwipeAction) {
+        val requested = PendingSwipeAction(receipt, action.toReceiptListAction(receipt.isArchived))
+        if (swipeConfig.confirmActions) requestedSwipe = requested else performSwipe(requested)
     }
     val scopedReceipts = applyReceiptListOptions(
         receipts = receipts,
@@ -450,14 +598,14 @@ private fun ReceiptList(
                 OutlinedTextField(
                     value = dateFrom,
                     onValueChange = { dateFrom = it },
-                    label = { Text("From YYYY-MM-DD") },
+                    label = { Text("Transaction from YYYY-MM-DD") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                 )
                 OutlinedTextField(
                     value = dateTo,
                     onValueChange = { dateTo = it },
-                    label = { Text("To YYYY-MM-DD") },
+                    label = { Text("Transaction to YYYY-MM-DD") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                 )
@@ -480,22 +628,35 @@ private fun ReceiptList(
                 Text(emptyScopeMessage(listScope))
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(scopedReceipts.filterNot { it.id in hiddenReceiptIds }, key = { it.id }) { receipt ->
-                    SwipeableReceiptCard(
-                        receipt = receipt,
-                        swipeConfig = swipeConfig,
-                        onClick = { onOpen(receipt.id) },
-                        onLongClick = { actionReceipt = receipt },
-                        onMenuClick = { actionReceipt = receipt },
-                        layoutMode = layoutMode,
-                        onSwipe = { action ->
-                            requestedSwipe = PendingSwipeAction(
-                                receipt,
-                                action.toReceiptListAction(receipt.isArchived),
-                            )
-                        },
-                    )
+            val visibleReceipts = scopedReceipts.filterNot { it.id in hiddenReceiptIds }
+            if (layoutMode == ReceiptLayoutMode.THUMBNAIL) {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    gridItems(visibleReceipts, key = { it.id }) { receipt ->
+                        ReceiptThumbnailCard(
+                            receipt = receipt,
+                            onClick = { onOpen(receipt.id) },
+                            onLongClick = { actionReceipt = receipt },
+                            onMenuClick = { actionReceipt = receipt },
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(visibleReceipts, key = { it.id }) { receipt ->
+                        SwipeableReceiptCard(
+                            receipt = receipt,
+                            swipeConfig = swipeConfig,
+                            onClick = { onOpen(receipt.id) },
+                            onLongClick = { actionReceipt = receipt },
+                            onMenuClick = { actionReceipt = receipt },
+                            layoutMode = layoutMode,
+                            onSwipe = { action -> requestSwipe(receipt, action) },
+                        )
+                    }
                 }
             }
         }
@@ -530,34 +691,14 @@ private fun ReceiptList(
         val verb = swipeActionVerb(requested.action)
         AlertDialog(
             onDismissRequest = { requestedSwipe = null },
-            title = { Text("$verb receipt?") },
+            title = {
+                Text(if (requested.action == ReceiptListAction.CASHEW) "$verb?" else "$verb receipt?")
+            },
             text = { Text(receiptActionConfirmation(requested.action)) },
             confirmButton = {
                 TextButton(onClick = {
                     requestedSwipe = null
-                    activeUndo?.let { previous ->
-                        undoJob?.cancel()
-                        commitSwipe(previous)
-                    }
-                    hiddenReceiptIds = hiddenReceiptIds + requested.receipt.id
-                    activeUndo = requested
-                    undoJob = coroutineScope.launch {
-                        snackbarHost.currentSnackbarData?.dismiss()
-                        val result = withTimeoutOrNull(SWIPE_UNDO_WINDOW_MILLIS) {
-                            snackbarHost.showSnackbar(
-                                message = "Receipt ${verb.lowercase()}d",
-                                actionLabel = "Undo",
-                                duration = SnackbarDuration.Indefinite,
-                            )
-                        }
-                        if (result == SnackbarResult.ActionPerformed) {
-                            hiddenReceiptIds = hiddenReceiptIds - requested.receipt.id
-                        } else {
-                            commitSwipe(requested)
-                        }
-                        activeUndo = null
-                        undoJob = null
-                    }
+                    performSwipe(requested)
                 }) { Text(verb) }
             },
             dismissButton = {
@@ -575,6 +716,10 @@ private fun ReceiptList(
                         actionReceipt = null
                         onOpen(receipt.id)
                     }, modifier = Modifier.fillMaxWidth()) { Text("Open / Edit") }
+                    TextButton(onClick = {
+                        actionReceipt = null
+                        onAdjust(receipt.id)
+                    }, modifier = Modifier.fillMaxWidth()) { Text("Adjust document") }
                     TextButton(onClick = {
                         actionReceipt = null
                         onCashew(receipt)
@@ -648,6 +793,7 @@ private fun SwipeableReceiptCard(
                 Text(
                     when {
                         action == SwipeAction.DELETE -> "Delete"
+                        action == SwipeAction.CASHEW -> "Open in Cashew"
                         receipt.isArchived -> "Restore"
                         else -> "Archive"
                     },
@@ -664,7 +810,7 @@ private data class PendingSwipeAction(
     val action: ReceiptListAction,
 )
 
-private enum class ReceiptListAction { ARCHIVE, RESTORE, DELETE }
+private enum class ReceiptListAction { ARCHIVE, RESTORE, DELETE, CASHEW }
 
 private fun receiptListScopeLabel(scope: ReceiptListScope): String = when (scope) {
     ReceiptListScope.ACTIVE -> "Active"
@@ -680,6 +826,7 @@ private fun emptyScopeMessage(scope: ReceiptListScope): String = when (scope) {
 
 private fun receiptLayoutLabel(mode: ReceiptLayoutMode): String = when (mode) {
     ReceiptLayoutMode.THUMBNAIL -> "Thumbnail"
+    ReceiptLayoutMode.MIXED -> "Mixed"
     ReceiptLayoutMode.LIST -> "List"
 }
 
@@ -853,8 +1000,8 @@ private fun ReceiptStatusDropdown(
 }
 
 private fun receiptSortLabel(sort: ReceiptSort): String = when (sort) {
-    ReceiptSort.DATE_NEWEST -> "Newest"
-    ReceiptSort.DATE_OLDEST -> "Oldest"
+    ReceiptSort.DATE_NEWEST -> "Recently added"
+    ReceiptSort.DATE_OLDEST -> "Oldest added"
     ReceiptSort.MERCHANT_ASC -> "Merchant"
     ReceiptSort.TOTAL_HIGH -> "Total high"
     ReceiptSort.TOTAL_LOW -> "Total low"
@@ -870,6 +1017,7 @@ private fun receiptStatusFilterLabel(filter: ReceiptStatusFilter): String = when
 private fun SwipeAction.toReceiptListAction(isArchived: Boolean): ReceiptListAction = when (this) {
     SwipeAction.ARCHIVE -> if (isArchived) ReceiptListAction.RESTORE else ReceiptListAction.ARCHIVE
     SwipeAction.DELETE -> ReceiptListAction.DELETE
+    SwipeAction.CASHEW -> ReceiptListAction.CASHEW
 }
 
 internal const val SWIPE_UNDO_WINDOW_MILLIS = 5_000L
@@ -878,6 +1026,7 @@ private fun swipeActionVerb(action: ReceiptListAction): String = when (action) {
     ReceiptListAction.ARCHIVE -> "Archive"
     ReceiptListAction.RESTORE -> "Restore"
     ReceiptListAction.DELETE -> "Delete"
+    ReceiptListAction.CASHEW -> "Open in Cashew"
 }
 
 private fun receiptActionConfirmation(action: ReceiptListAction): String = when (action) {
@@ -887,6 +1036,51 @@ private fun receiptActionConfirmation(action: ReceiptListAction): String = when 
         "This receipt will return to the active list. You can undo for five seconds."
     ReceiptListAction.DELETE ->
         "This receipt and its image will be permanently deleted after five seconds."
+    ReceiptListAction.CASHEW ->
+        "This will open a prepared transaction in Cashew."
+}
+
+@Composable
+private fun ReceiptThumbnailCard(
+    receipt: ReceiptEntity,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onMenuClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().combinedClickable(
+            onClick = onClick,
+            onLongClick = onLongClick,
+        ),
+    ) {
+        Column {
+            Box {
+                AsyncImage(
+                    model = File(receipt.imagePath),
+                    contentDescription = "Receipt image for ${receiptDisplayTitle(receipt)}",
+                    modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                    contentScale = ContentScale.Crop,
+                )
+                IconButton(
+                    onClick = onMenuClick,
+                    modifier = Modifier.align(Alignment.TopEnd).background(
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                        RoundedCornerShape(bottomStart = 16.dp),
+                    ),
+                ) {
+                    Text("⋮", style = MaterialTheme.typography.headlineSmall)
+                }
+            }
+            Text(
+                receiptDisplayTitle(receipt),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -904,10 +1098,10 @@ private fun ReceiptCard(
         ),
     ) {
         Row(
-            Modifier.padding(if (layoutMode == ReceiptLayoutMode.THUMBNAIL) 12.dp else 8.dp),
+            Modifier.padding(if (layoutMode == ReceiptLayoutMode.MIXED) 12.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (layoutMode == ReceiptLayoutMode.THUMBNAIL) {
+            if (layoutMode == ReceiptLayoutMode.MIXED) {
                 AsyncImage(
                     model = File(receipt.imagePath),
                     contentDescription = "Receipt image",
@@ -923,20 +1117,27 @@ private fun ReceiptCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (layoutMode == ReceiptLayoutMode.THUMBNAIL) {
-                    Text(receipt.transactionDate.ifBlank { DateFormat.getDateInstance().format(Date(receipt.createdAt)) })
+                if (layoutMode == ReceiptLayoutMode.MIXED) {
+                    if (receipt.transactionDate.isNotBlank()) {
+                        Text("Transaction ${receipt.transactionDate}")
+                    }
+                    Text("Added ${formatAddedDate(receipt.createdAt)}")
                     Text(statusLabel(receipt))
                 } else {
                     Text(
-                        listOf(
-                            receipt.transactionDate.ifBlank {
-                                DateFormat.getDateInstance().format(Date(receipt.createdAt))
-                            },
-                            statusLabel(receipt),
-                        ).joinToString(" · "),
+                        "Added ${formatAddedDate(receipt.createdAt)} · ${statusLabel(receipt)}",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
                     )
+                    if (receipt.transactionDate.isNotBlank()) {
+                        Text(
+                            "Transaction ${receipt.transactionDate}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
@@ -958,13 +1159,135 @@ private fun statusLabel(receipt: ReceiptEntity): String = when (receipt.processi
 }
 
 @Composable
+private fun DocumentAdjustmentScreen(
+    receipt: ReceiptEntity?,
+    initial: CropSelection,
+    modifier: Modifier = Modifier,
+    onCancel: () -> Unit,
+    onApply: (CropSelection) -> Unit,
+) {
+    if (receipt == null) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        return
+    }
+    var selection by remember(receipt.id) { mutableStateOf(initial) }
+    val latestSelection by rememberUpdatedState(selection)
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    val valid = isValidCrop(selection.corners)
+    Column(
+        modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            "Drag each corner to the matching receipt corner. The saved points will be used for perspective correction.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        BoxWithConstraints(
+            Modifier.fillMaxWidth().weight(1f).background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            val dimensions = orientedImageDimensions(File(receipt.imagePath), selection.rotation)
+            val imageAspect = dimensions.first.toFloat() / dimensions.second
+            val availableAspect = maxWidth.value / maxHeight.value
+            val imageModifier = if (imageAspect > availableAspect) {
+                Modifier.fillMaxWidth().aspectRatio(imageAspect)
+            } else {
+                Modifier.fillMaxHeight().aspectRatio(imageAspect)
+            }
+            Box(imageModifier.align(Alignment.Center)) {
+                AsyncImage(
+                    model = File(receipt.imagePath),
+                    contentDescription = "Receipt being adjusted",
+                    modifier = Modifier.fillMaxSize().graphicsLayer { rotationZ = selection.rotation.toFloat() },
+                    contentScale = ContentScale.Fit,
+                )
+                Canvas(
+                    Modifier
+                        .fillMaxSize()
+                        .onSizeChanged { canvasSize = it }
+                        .pointerInput(canvasSize) {
+                        var activeCorner = -1
+                        detectDragGestures(
+                            onDragStart = { position ->
+                                val nearest = latestSelection.corners.indices.minByOrNull { index ->
+                                    val point = latestSelection.corners[index]
+                                    val dx = position.x - point.x * canvasSize.width
+                                    val dy = position.y - point.y * canvasSize.height
+                                    dx * dx + dy * dy
+                                } ?: -1
+                                activeCorner = nearest.takeIf { index ->
+                                    val point = latestSelection.corners[index]
+                                    val dx = position.x - point.x * canvasSize.width
+                                    val dy = position.y - point.y * canvasSize.height
+                                    dx * dx + dy * dy <= 56.dp.toPx() * 56.dp.toPx()
+                                } ?: -1
+                            },
+                            onDragEnd = { activeCorner = -1 },
+                            onDragCancel = { activeCorner = -1 },
+                        ) { change, dragAmount ->
+                            if (activeCorner >= 0 && canvasSize.width > 0 && canvasSize.height > 0) {
+                                change.consume()
+                                val updated = latestSelection.corners.toMutableList()
+                                val current = updated[activeCorner]
+                                updated[activeCorner] = NormalizedPoint(
+                                    current.x + dragAmount.x / canvasSize.width,
+                                    current.y + dragAmount.y / canvasSize.height,
+                                ).constrained()
+                                selection = latestSelection.copy(corners = updated)
+                            }
+                        }
+                        },
+                ) {
+                    val offsets = selection.corners.map { Offset(it.x * size.width, it.y * size.height) }
+                    val path = Path().apply {
+                        moveTo(offsets[0].x, offsets[0].y)
+                        offsets.drop(1).forEach { lineTo(it.x, it.y) }
+                        close()
+                    }
+                    clipPath(path, ClipOp.Difference) {
+                        drawRect(Color.Black.copy(alpha = 0.52f))
+                    }
+                    drawPath(path, Color(0xFF00E5FF), style = Stroke(width = 3.dp.toPx()))
+                    offsets.forEach { point ->
+                        drawCircle(Color.White, radius = 18.dp.toPx(), center = point)
+                        drawCircle(Color(0xFF00A7C4), radius = 12.dp.toPx(), center = point)
+                    }
+                }
+            }
+        }
+        if (!valid) {
+            Text("Move the corners into a non-crossing document shape.", color = MaterialTheme.colorScheme.error)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { selection = selection.copy(corners = defaultCropCorners()) },
+                modifier = Modifier.weight(1f),
+            ) { Text("Reset") }
+            OutlinedButton(
+                onClick = { selection = rotateCropClockwise(selection) },
+                modifier = Modifier.weight(1f),
+            ) { Text("Rotate") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("Cancel") }
+            Button(
+                onClick = { onApply(selection) },
+                enabled = valid,
+                modifier = Modifier.weight(1f),
+            ) { Text("Apply") }
+        }
+    }
+}
+
+@Composable
 private fun ReceiptDetail(
     receipt: ReceiptEntity?,
     modifier: Modifier = Modifier,
-    onSave: (String, String, String, String, String, String, String, String) -> Unit,
+    onSave: (String, String, String, String, String, String, String, String, String) -> Unit,
     onRetry: (String) -> Unit,
     onDelete: (String) -> Unit,
     onCashew: (ReceiptEntity) -> Unit,
+    onAdjust: (String) -> Unit,
 ) {
     if (receipt == null) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -977,18 +1300,50 @@ private fun ReceiptDetail(
     var total by rememberSaveable(receipt.id, receipt.updatedAt) { mutableStateOf(receipt.total) }
     var currency by rememberSaveable(receipt.id, receipt.updatedAt) { mutableStateOf(receipt.currency) }
     var rawText by rememberSaveable(receipt.id, receipt.updatedAt) { mutableStateOf(receipt.rawOcrText) }
+    var addedDate by rememberSaveable(receipt.id, receipt.updatedAt) {
+        mutableStateOf(formatAddedDate(receipt.createdAt))
+    }
+    var showLmInput by rememberSaveable(receipt.id) { mutableStateOf(false) }
+    var showFullScreenImage by rememberSaveable(receipt.id) { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmRetry by remember { mutableStateOf(false) }
+    val originalImage = File(receipt.imagePath)
+    val lmInputImage = File(originalImage.parentFile, "lm-input.jpg")
+    val displayedImage = if (showLmInput && lmInputImage.exists()) lmInputImage else originalImage
 
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        if (lmInputImage.exists()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!showLmInput) {
+                    Button(onClick = { showLmInput = false }, modifier = Modifier.weight(1f)) {
+                        Text("Original")
+                    }
+                    OutlinedButton(onClick = { showLmInput = true }, modifier = Modifier.weight(1f)) {
+                        Text("Sent to LM")
+                    }
+                } else {
+                    OutlinedButton(onClick = { showLmInput = false }, modifier = Modifier.weight(1f)) {
+                        Text("Original")
+                    }
+                    Button(onClick = { showLmInput = true }, modifier = Modifier.weight(1f)) {
+                        Text("Sent to LM")
+                    }
+                }
+            }
+        }
         AsyncImage(
-            model = File(receipt.imagePath),
-            contentDescription = "Full receipt",
-            modifier = Modifier.fillMaxWidth().height(280.dp),
+            model = displayedImage,
+            contentDescription = if (showLmInput) "Image sent to LM Studio" else "Original receipt",
+            modifier = Modifier.fillMaxWidth().height(280.dp).clickable { showFullScreenImage = true },
             contentScale = ContentScale.Fit,
+        )
+        Text(
+            if (showLmInput && lmInputImage.exists()) "Exact prepared image sent to LM Studio"
+            else "Original stored receipt",
+            style = MaterialTheme.typography.bodySmall,
         )
         Text(statusLabel(receipt), style = MaterialTheme.typography.labelLarge)
         if (receipt.processingAttempt > 0) {
@@ -1015,6 +1370,13 @@ private fun ReceiptDetail(
             ) { Text("Try OCR again") }
         }
         HorizontalDivider()
+        OutlinedTextField(
+            addedDate,
+            { addedDate = it },
+            label = { Text("Added date (YYYY-MM-DD)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
         OutlinedTextField(merchant, { merchant = it }, label = { Text("Merchant") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(date, { date = it }, label = { Text("Transaction date") }, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1032,7 +1394,9 @@ private fun ReceiptDetail(
             modifier = Modifier.fillMaxWidth().height(220.dp),
         )
         Button(
-            onClick = { onSave(receipt.id, merchant, date, subtotal, tax, total, currency, rawText) },
+            onClick = {
+                onSave(receipt.id, merchant, date, subtotal, tax, total, currency, rawText, addedDate)
+            },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Save changes") }
         OutlinedButton(
@@ -1040,8 +1404,40 @@ private fun ReceiptDetail(
             enabled = total.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) { Text(if (receipt.cashewExportedAt == null) "Open in Cashew" else "Open in Cashew again") }
+        OutlinedButton(
+            onClick = { onAdjust(receipt.id) },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Adjust document corners") }
         TextButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth()) {
             Text("Delete receipt", color = MaterialTheme.colorScheme.error)
+        }
+    }
+    if (showFullScreenImage) {
+        Dialog(
+            onDismissRequest = { showFullScreenImage = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                AsyncImage(
+                    model = displayedImage,
+                    contentDescription = if (showLmInput) {
+                        "Full-screen image sent to LM Studio"
+                    } else {
+                        "Full-screen original receipt"
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+                TextButton(
+                    onClick = { showFullScreenImage = false },
+                    modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+                ) {
+                    Text("Close", color = Color.White)
+                }
+            }
         }
     }
     if (confirmDelete) {
@@ -1099,6 +1495,7 @@ private fun SettingsScreen(
     var token by rememberSaveable { mutableStateOf(initial.apiToken) }
     var rightSwipe by rememberSaveable { mutableStateOf(initialSwipe.right) }
     var leftSwipe by rememberSaveable { mutableStateOf(initialSwipe.left) }
+    var confirmSwipeActions by rememberSaveable { mutableStateOf(initialSwipe.confirmActions) }
     var ocrConcurrency by rememberSaveable { mutableStateOf(initialOcrConcurrency) }
     var homeNetworkEnabled by rememberSaveable { mutableStateOf(initialHomeNetwork.enabled) }
     var homeNetworkSsid by rememberSaveable { mutableStateOf(initialHomeNetwork.ssid) }
@@ -1247,11 +1644,32 @@ private fun SettingsScreen(
         Text("Receipt list swipe actions", style = MaterialTheme.typography.titleMedium)
         SwipeActionDropdown("Swipe right", rightSwipe) { rightSwipe = it }
         SwipeActionDropdown("Swipe left", leftSwipe) { leftSwipe = it }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Confirm swipe actions")
+                Text(
+                    if (confirmSwipeActions) {
+                        "Ask before running the selected swipe action."
+                    } else {
+                        "Run swipe actions immediately. Archive and delete still have Undo."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(
+                checked = confirmSwipeActions,
+                onCheckedChange = { confirmSwipeActions = it },
+            )
+        }
         Button(
             onClick = {
                 onSave(SettingsSelection(
                     lmStudio = LmStudioConfig(url, model, token),
-                    swipes = SwipeConfig(rightSwipe, leftSwipe),
+                    swipes = SwipeConfig(rightSwipe, leftSwipe, confirmSwipeActions),
                     ocrConcurrency = ocrConcurrency,
                     homeNetwork = HomeNetworkConfig(homeNetworkEnabled, homeNetworkSsid),
                 ))
@@ -1447,7 +1865,7 @@ private fun SwipeActionDropdown(
     var expanded by remember { mutableStateOf(false) }
     ExposedDropdownMenuBox(expanded, { expanded = !expanded }) {
         OutlinedTextField(
-            value = selected.name.lowercase().replaceFirstChar(Char::uppercase),
+            value = swipeActionLabel(selected),
             onValueChange = {},
             readOnly = true,
             label = { Text(label) },
@@ -1457,7 +1875,7 @@ private fun SwipeActionDropdown(
         ExposedDropdownMenu(expanded, { expanded = false }) {
             SwipeAction.entries.forEach { action ->
                 DropdownMenuItem(
-                    text = { Text(action.name.lowercase().replaceFirstChar(Char::uppercase)) },
+                    text = { Text(swipeActionLabel(action)) },
                     onClick = {
                         onSelected(action)
                         expanded = false
@@ -1466,4 +1884,10 @@ private fun SwipeActionDropdown(
             }
         }
     }
+}
+
+private fun swipeActionLabel(action: SwipeAction): String = when (action) {
+    SwipeAction.ARCHIVE -> "Archive / Restore"
+    SwipeAction.DELETE -> "Delete"
+    SwipeAction.CASHEW -> "Open in Cashew"
 }

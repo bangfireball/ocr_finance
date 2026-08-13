@@ -12,6 +12,12 @@ class ReceiptDestinationTest {
     }
 
     @Test
+    fun adjustRoundTripsReceiptId() {
+        val destination = ReceiptDestination.Adjust("receipt-123")
+        assertEquals(destination, ReceiptDestination.decode(destination.encode()))
+    }
+
+    @Test
     fun listAndSettingsRoundTrip() {
         assertEquals(
             ReceiptDestination.List,
